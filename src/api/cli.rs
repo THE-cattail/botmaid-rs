@@ -1,0 +1,90 @@
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::Result;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::Mutex;
+use tokio::sync::mpsc::{Receiver, Sender};
+
+use super::BotAPI;
+
+pub struct Cli {
+    event_tx: Sender<super::Event>,
+    event_rx: Arc<Mutex<Receiver<super::Event>>>,
+}
+
+impl Cli {
+    #[must_use]
+    pub fn new() -> Arc<Self> {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<super::Event>(1);
+
+        Arc::new(Self {
+            event_tx,
+            event_rx: Arc::new(Mutex::new(event_rx)),
+        })
+    }
+
+    async fn handle_line(self: &Arc<Self>, line: Option<String>) {
+        let Some(line) = line else { return };
+
+        let sender = crate::User::new(users::get_current_uid().to_string()).nickname(
+            users::get_current_username()
+                .unwrap_or_default()
+                .into_string()
+                .unwrap_or_default(),
+        );
+        if let Err(err) = self
+            .event_tx
+            .send(super::Event::Message(
+                crate::Message::new(
+                    now_as_id(),
+                    super::MessageContents::new().text(line),
+                    super::Chat::Private(sender.clone()),
+                    sender,
+                )
+                .bot(self.clone()),
+            ))
+            .await
+        {
+            tracing::error!("{err:?}");
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl BotAPI for Cli {
+    async fn run(self: Arc<Self>) {
+        let mut reader = BufReader::new(tokio::io::stdin()).lines();
+        loop {
+            match reader.next_line().await {
+                Ok(line) => self.handle_line(line).await,
+                Err(err) => {
+                    tracing::error!("{err:?}");
+                    break;
+                },
+            }
+        }
+    }
+
+    async fn next_event(&self) -> Option<super::Event> {
+        let mut events = self.event_rx.lock().await;
+        events.recv().await
+    }
+
+    async fn send_msg_inner(
+        &self,
+        contents: super::MessageContents,
+        _: super::Chat,
+    ) -> Result<String> {
+        println!("```\n{contents}\n```");
+
+        Ok(now_as_id())
+    }
+}
+
+fn now_as_id() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |t| t.as_millis().try_into().unwrap_or(0))
+        .to_string()
+}

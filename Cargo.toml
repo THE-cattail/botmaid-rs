@@ -1,0 +1,31 @@
+[package]
+name = "botmaid-rs"
+version = "0.1.0"
+edition = "2024"
+authors = ["猫尾黑夜"]
+description = "猫粮：聊天机器人女仆"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0"
+derivative = "2"
+food-http-rs = { git = "https://gitea.infra.k-neco.moe/cml/food-http-rs.git" }
+futures-util = "0"
+reqwest = { version = "0", features = [
+    "json",
+    "rustls-tls",
+], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0", features = ["rustls-tls-native-roots"] }
+tracing = "0"
+tungstenite = "0"
+url = "2"
+users = "0"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
