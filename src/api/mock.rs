@@ -48,15 +48,12 @@ impl Mock {
     pub fn simple_msg(self: &Arc<Self>, contents: crate::MessageContents) {
         let sender = crate::User::new(DEFAULT_SENDER_ID.to_owned())
             .nickname(DEFAULT_SENDER_NICKNAME.to_owned());
-        self.happen(crate::Event::Message(
-            crate::Message::new(
-                uuid::Uuid::new_v4().to_string(),
-                contents,
-                crate::Chat::Private(sender.clone()),
-                sender,
-            )
-            .bot(self.clone()),
-        ));
+        self.happen(crate::Event::Message(crate::Message::new(
+            uuid::Uuid::new_v4().to_string(),
+            contents,
+            crate::Chat::private(sender.clone()).api(self.clone()),
+            sender,
+        )));
     }
 
     pub fn simple_text<D>(self: &Arc<Self>, text: D)

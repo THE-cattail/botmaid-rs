@@ -35,15 +35,12 @@ impl Cli {
         );
         if let Err(err) = self
             .event_tx
-            .send(super::Event::Message(
-                crate::Message::new(
-                    now_as_id(),
-                    super::MessageContents::new().text(line),
-                    super::Chat::Private(sender.clone()),
-                    sender,
-                )
-                .bot(self.clone()),
-            ))
+            .send(super::Event::Message(crate::Message::new(
+                now_as_id(),
+                super::MessageContents::new().text(line),
+                super::Chat::private(sender.clone()).api(self.clone()),
+                sender,
+            )))
             .await
         {
             tracing::error!("{err:?}");

@@ -41,33 +41,30 @@ impl Telegram {
         if let Some(message) = update.message {
             if let Some(text) = message.text {
                 self.event_tx
-                    .send(crate::Event::Message(
-                        crate::Message::new(
-                            message.message_id.to_string(),
-                            crate::MessageContents::new().text(text),
-                            if let Some(chat) = message.chat {
-                                if chat.r#type == "private" {
-                                    crate::Chat::Private(crate::User::new(chat.id.to_string()))
-                                } else {
-                                    crate::Chat::Group(crate::Group::new(chat.id.to_string()))
-                                }
+                    .send(crate::Event::Message(crate::Message::new(
+                        message.message_id.to_string(),
+                        crate::MessageContents::new().text(text),
+                        if let Some(chat) = message.chat {
+                            if chat.r#type == "private" {
+                                crate::Chat::private(crate::User::new(chat.id.to_string()))
                             } else {
-                                crate::Chat::Private(crate::User::new(String::new()))
-                            },
-                            if let Some(from) = message.from {
-                                crate::User::new(from.id.to_string()).nickname(format!(
-                                    "{}{}",
-                                    from.first_name,
-                                    from.last_name.map_or_else(String::new, |last_name| format!(
-                                        " {last_name}"
-                                    ))
-                                ))
-                            } else {
-                                crate::User::new(String::new())
-                            },
-                        )
-                        .bot(self.clone()),
-                    ))
+                                crate::Chat::group(crate::Group::new(chat.id.to_string()))
+                            }
+                        } else {
+                            crate::Chat::private(crate::User::new(String::new()))
+                        }
+                        .api(self.clone()),
+                        if let Some(from) = message.from {
+                            crate::User::new(from.id.to_string()).nickname(format!(
+                                "{}{}",
+                                from.first_name,
+                                from.last_name
+                                    .map_or_else(String::new, |last_name| format!(" {last_name}"))
+                            ))
+                        } else {
+                            crate::User::new(String::new())
+                        },
+                    )))
                     .await?;
             }
         }
@@ -209,12 +206,12 @@ impl BotAPI for Telegram {
             }
         }
 
-        let req = match chat {
-            crate::Chat::Private(user) => SendMessageReq {
+        let req = match chat.get_info() {
+            crate::ChatInfo::Private(user) => SendMessageReq {
                 chat_id: user.id.parse()?,
                 text: raw,
             },
-            crate::Chat::Group(group) => SendMessageReq {
+            crate::ChatInfo::Group(group) => SendMessageReq {
                 chat_id: group.id.parse()?,
                 text: raw,
             },

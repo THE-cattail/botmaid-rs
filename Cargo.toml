@@ -1,6 +1,6 @@
 [package]
 name = "botmaid-rs"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2024"
 authors = ["猫尾黑夜"]
 description = "猫粮：聊天机器人女仆"

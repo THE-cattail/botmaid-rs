@@ -61,20 +61,18 @@ impl OneBot11 {
                     sender,
                 } => {
                     let sender = crate::User::new(user_id.to_string()).nickname(sender.nickname);
-                    crate::Event::Message(
-                        crate::Message::new(
-                            message_id.to_string(),
-                            crate::MessageContents::new().text(raw_message),
-                            match message_type {
-                                MessageType::Private => crate::Chat::Private(sender.clone()),
-                                MessageType::Group => crate::Chat::Group(crate::Group::new(
-                                    group_id.context("no group id")?.to_string(),
-                                )),
-                            },
-                            sender,
-                        )
-                        .bot(self.clone()),
-                    )
+                    crate::Event::Message(crate::Message::new(
+                        message_id.to_string(),
+                        crate::MessageContents::new().text(raw_message),
+                        match message_type {
+                            MessageType::Private => crate::Chat::private(sender.clone()),
+                            MessageType::Group => crate::Chat::group(crate::Group::new(
+                                group_id.context("no group id")?.to_string(),
+                            )),
+                        }
+                        .api(self.clone()),
+                        sender,
+                    ))
                 },
                 Event::Notice | Event::Request | Event::Meta => {
                     crate::Event::Other(format!("{event:?}"))
@@ -177,12 +175,12 @@ impl BotAPI for OneBot11 {
             }
         }
 
-        let req = match chat {
-            crate::Chat::Private(user) => SendMsgReq::Private {
+        let req = match chat.get_info() {
+            crate::ChatInfo::Private(user) => SendMsgReq::Private {
                 user_id: user.id.parse()?,
                 message: raw,
             },
-            crate::Chat::Group(group) => SendMsgReq::Group {
+            crate::ChatInfo::Group(group) => SendMsgReq::Group {
                 group_id: group.id.parse()?,
                 message: raw,
             },
