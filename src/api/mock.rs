@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,35 +8,47 @@ use tokio::sync::mpsc::{Receiver, Sender};
 
 use super::BotAPI;
 
-pub static DEFAULT_BOT_NAME: &str = "mock";
 pub static DEFAULT_SENDER_ID: &str = "0";
 pub static DEFAULT_SENDER_NICKNAME: &str = "tester";
 
-pub struct Mock {
+pub struct Mock<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     self_user: crate::User,
 
-    event_tx: Sender<crate::Event>,
-    event_rx: Arc<Mutex<Receiver<crate::Event>>>,
+    event_tx: Sender<crate::Event<C>>,
+    event_rx: Arc<Mutex<Receiver<crate::Event<C>>>>,
 
-    actions: Arc<Mutex<Vec<Action>>>,
+    actions: Arc<Mutex<Vec<Action<C>>>>,
+
+    context: C,
 }
 
-impl Mock {
+impl<C> Mock<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     #[must_use]
-    pub fn new() -> Arc<Self> {
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::Event>(1);
+    pub fn new(context: C) -> Self
+    where
+        C: Clone + Debug + Send + Sync + 'static,
+    {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::Event<C>>(1);
 
-        Arc::new(Self {
+        Self {
             self_user: crate::User::new(DEFAULT_SENDER_ID.to_owned()),
 
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
 
             actions: Arc::new(Mutex::new(Vec::new())),
-        })
+
+            context,
+        }
     }
 
-    pub fn happen(self: &Arc<Self>, event: crate::Event) {
+    pub fn happen(self: &Arc<Self>, event: crate::Event<C>) {
         let self_clone = self.clone();
         tokio::spawn(async move {
             if let Err(err) = self_clone.event_tx.send(event).await {
@@ -48,15 +60,12 @@ impl Mock {
     pub fn simple_msg(self: &Arc<Self>, contents: crate::MessageContents) {
         let sender = crate::User::new(DEFAULT_SENDER_ID.to_owned())
             .nickname(DEFAULT_SENDER_NICKNAME.to_owned());
-        self.happen(crate::Event::Message(
-            crate::Message::new(
-                uuid::Uuid::new_v4().to_string(),
-                contents,
-                crate::Chat::Private(sender.clone()),
-                sender,
-            )
-            .bot(self.clone()),
-        ));
+        self.happen(crate::Event::Message(crate::Message::new(
+            uuid::Uuid::new_v4().to_string(),
+            contents,
+            crate::Chat::private(self.clone(), sender.clone()),
+            sender,
+        )));
     }
 
     pub fn simple_text<D>(self: &Arc<Self>, text: D)
@@ -66,22 +75,25 @@ impl Mock {
         self.simple_msg(crate::MessageContents::new().text(text));
     }
 
-    pub async fn get_actions(&self) -> Vec<Action> {
+    pub async fn get_actions(&self) -> Vec<Action<C>> {
         self.get_actions_with_timeout(Duration::from_millis(200))
             .await
     }
 
-    pub async fn get_actions_with_timeout(&self, timeout: Duration) -> Vec<Action> {
+    pub async fn get_actions_with_timeout(&self, timeout: Duration) -> Vec<Action<C>> {
         tokio::time::sleep(timeout).await;
         self.actions.lock().await.drain(..).collect()
     }
 }
 
 #[async_trait::async_trait]
-impl BotAPI for Mock {
+impl<C> BotAPI<C> for Mock<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     async fn run(self: Arc<Self>) {}
 
-    async fn next_event(&self) -> Option<crate::Event> {
+    async fn next_event(&self) -> Option<crate::Event<C>> {
         let mut events = self.event_rx.lock().await;
         events.recv().await
     }
@@ -89,7 +101,7 @@ impl BotAPI for Mock {
     async fn send_msg_inner(
         &self,
         contents: crate::MessageContents,
-        chat: crate::Chat,
+        chat: crate::Chat<C>,
     ) -> Result<String> {
         self.actions
             .lock()
@@ -103,18 +115,28 @@ impl BotAPI for Mock {
 
         Ok(DEFAULT_SENDER_ID.to_owned())
     }
+
+    fn get_context(&self) -> &C {
+        &self.context
+    }
 }
 
 #[derive(Clone)]
-pub enum Action {
-    SendMessage(crate::Message),
+pub enum Action<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
+    SendMessage(crate::Message<C>),
     #[allow(dead_code)]
     Other,
 }
 
-impl Action {
+impl<C> Action<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     #[must_use]
-    pub fn send_msg(self) -> Option<crate::Message> {
+    pub fn send_msg(self) -> Option<crate::Message<C>> {
         if let Self::SendMessage(msg) = self {
             Some(msg)
         } else {

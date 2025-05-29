@@ -11,20 +11,31 @@ use url::Url;
 
 use super::BotAPI;
 
-pub struct Telegram {
+pub struct Telegram<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     api_url: Url,
 
     #[allow(dead_code)]
-    event_tx: Sender<crate::Event>,
-    event_rx: Arc<Mutex<Receiver<crate::Event>>>,
+    event_tx: Sender<crate::Event<C>>,
+    event_rx: Arc<Mutex<Receiver<crate::Event<C>>>>,
+
+    context: C,
 }
 
-impl Telegram {
+impl<C> Telegram<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     /// # Errors
-    pub fn new(token: &str) -> Result<Arc<Self>> {
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::Event>(1);
+    pub fn new(token: &str, context: C) -> Result<Self>
+    where
+        C: Clone + Debug + Send + Sync + 'static,
+    {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::Event<C>>(1);
 
-        let arc = Arc::new(Self {
+        Ok(Self {
             api_url: {
                 let s = format!("https://api.telegram.org/bot{token}/");
                 Url::parse(&s).with_context(|| format!("failed to parse api url `{s}`"))?
@@ -32,42 +43,44 @@ impl Telegram {
 
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
-        });
 
-        Ok(arc)
+            context,
+        })
     }
 
     async fn handle_update(self: &Arc<Self>, update: Update) -> Result<()> {
         if let Some(message) = update.message {
             if let Some(text) = message.text {
                 self.event_tx
-                    .send(crate::Event::Message(
-                        crate::Message::new(
-                            message.message_id.to_string(),
-                            crate::MessageContents::new().text(text),
-                            if let Some(chat) = message.chat {
-                                if chat.r#type == "private" {
-                                    crate::Chat::Private(crate::User::new(chat.id.to_string()))
-                                } else {
-                                    crate::Chat::Group(crate::Group::new(chat.id.to_string()))
-                                }
+                    .send(crate::Event::Message(crate::Message::new(
+                        message.message_id.to_string(),
+                        crate::MessageContents::new().text(text),
+                        if let Some(chat) = message.chat {
+                            if chat.r#type == "private" {
+                                crate::Chat::private(
+                                    self.clone(),
+                                    crate::User::new(chat.id.to_string()),
+                                )
                             } else {
-                                crate::Chat::Private(crate::User::new(String::new()))
-                            },
-                            if let Some(from) = message.from {
-                                crate::User::new(from.id.to_string()).nickname(format!(
-                                    "{}{}",
-                                    from.first_name,
-                                    from.last_name.map_or_else(String::new, |last_name| format!(
-                                        " {last_name}"
-                                    ))
-                                ))
-                            } else {
-                                crate::User::new(String::new())
-                            },
-                        )
-                        .bot(self.clone()),
-                    ))
+                                crate::Chat::group(
+                                    self.clone(),
+                                    crate::Group::new(chat.id.to_string()),
+                                )
+                            }
+                        } else {
+                            crate::Chat::private(self.clone(), crate::User::new(String::new()))
+                        },
+                        if let Some(from) = message.from {
+                            crate::User::new(from.id.to_string()).nickname(format!(
+                                "{}{}",
+                                from.first_name,
+                                from.last_name
+                                    .map_or_else(String::new, |last_name| format!(" {last_name}"))
+                            ))
+                        } else {
+                            crate::User::new(String::new())
+                        },
+                    )))
                     .await?;
             }
         }
@@ -117,7 +130,10 @@ impl Telegram {
 }
 
 #[async_trait::async_trait]
-impl BotAPI for Telegram {
+impl<C> BotAPI<C> for Telegram<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     async fn run(self: Arc<Self>) {
         loop {
             let mut offset = 0;
@@ -182,7 +198,7 @@ impl BotAPI for Telegram {
         }
     }
 
-    async fn next_event(&self) -> Option<crate::Event> {
+    async fn next_event(&self) -> Option<crate::Event<C>> {
         let mut events = self.event_rx.lock().await;
         events.recv().await
     }
@@ -190,7 +206,7 @@ impl BotAPI for Telegram {
     async fn send_msg_inner(
         &self,
         contents: crate::MessageContents,
-        chat: crate::Chat,
+        chat: crate::Chat<C>,
     ) -> Result<String> {
         let mut raw = String::new();
         for content in contents {
@@ -209,12 +225,12 @@ impl BotAPI for Telegram {
             }
         }
 
-        let req = match chat {
-            crate::Chat::Private(user) => SendMessageReq {
+        let req = match chat.get_info() {
+            crate::ChatInfo::Private(user) => SendMessageReq {
                 chat_id: user.id.parse()?,
                 text: raw,
             },
-            crate::Chat::Group(group) => SendMessageReq {
+            crate::ChatInfo::Group(group) => SendMessageReq {
                 chat_id: group.id.parse()?,
                 text: raw,
             },
@@ -225,6 +241,10 @@ impl BotAPI for Telegram {
             .await?;
 
         Ok(resp.message_id.to_string())
+    }
+
+    fn get_context(&self) -> &C {
+        &self.context
     }
 }
 

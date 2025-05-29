@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -8,20 +9,33 @@ use tokio::sync::mpsc::{Receiver, Sender};
 
 use super::BotAPI;
 
-pub struct Cli {
-    event_tx: Sender<super::Event>,
-    event_rx: Arc<Mutex<Receiver<super::Event>>>,
+pub struct Cli<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
+    event_tx: Sender<super::Event<C>>,
+    event_rx: Arc<Mutex<Receiver<super::Event<C>>>>,
+
+    context: C,
 }
 
-impl Cli {
+impl<C> Cli<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     #[must_use]
-    pub fn new() -> Arc<Self> {
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<super::Event>(1);
+    pub fn new(context: C) -> Self
+    where
+        C: Clone + Debug + Send + Sync + 'static,
+    {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<super::Event<C>>(1);
 
-        Arc::new(Self {
+        Self {
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
-        })
+
+            context,
+        }
     }
 
     async fn handle_line(self: &Arc<Self>, line: Option<String>) {
@@ -35,15 +49,12 @@ impl Cli {
         );
         if let Err(err) = self
             .event_tx
-            .send(super::Event::Message(
-                crate::Message::new(
-                    now_as_id(),
-                    super::MessageContents::new().text(line),
-                    super::Chat::Private(sender.clone()),
-                    sender,
-                )
-                .bot(self.clone()),
-            ))
+            .send(super::Event::Message(crate::Message::new(
+                now_as_id(),
+                super::MessageContents::new().text(line),
+                super::Chat::private(self.clone(), sender.clone()),
+                sender,
+            )))
             .await
         {
             tracing::error!("{err:?}");
@@ -52,7 +63,10 @@ impl Cli {
 }
 
 #[async_trait::async_trait]
-impl BotAPI for Cli {
+impl<C> BotAPI<C> for Cli<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     async fn run(self: Arc<Self>) {
         let mut reader = BufReader::new(tokio::io::stdin()).lines();
         loop {
@@ -66,7 +80,7 @@ impl BotAPI for Cli {
         }
     }
 
-    async fn next_event(&self) -> Option<super::Event> {
+    async fn next_event(&self) -> Option<super::Event<C>> {
         let mut events = self.event_rx.lock().await;
         events.recv().await
     }
@@ -74,11 +88,15 @@ impl BotAPI for Cli {
     async fn send_msg_inner(
         &self,
         contents: super::MessageContents,
-        _: super::Chat,
+        _: super::Chat<C>,
     ) -> Result<String> {
         println!("```\n{contents}\n```");
 
         Ok(now_as_id())
+    }
+
+    fn get_context(&self) -> &C {
+        &self.context
     }
 }
 

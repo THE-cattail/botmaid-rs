@@ -11,20 +11,31 @@ use url::Url;
 
 use super::BotAPI;
 
-pub struct OneBot11 {
+pub struct OneBot11<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     event_url: Url,
     api_url: Url,
 
-    event_tx: Sender<crate::Event>,
-    event_rx: Arc<Mutex<Receiver<crate::Event>>>,
+    event_tx: Sender<crate::Event<C>>,
+    event_rx: Arc<Mutex<Receiver<crate::Event<C>>>>,
+
+    context: C,
 }
 
-impl OneBot11 {
+impl<C> OneBot11<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     /// # Errors
-    pub fn new(host: &str, ws_port: u16, http_port: u16) -> Result<Arc<Self>> {
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::Event>(1);
+    pub fn new(host: &str, ws_port: u16, http_port: u16, context: C) -> Result<Self>
+    where
+        C: Clone + Debug + Send + Sync + 'static,
+    {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::Event<C>>(1);
 
-        let arc = Arc::new(Self {
+        Ok(Self {
             event_url: {
                 let s = format!("ws://{host}:{ws_port}/event");
                 Url::parse(&s).with_context(|| format!("failed to parse event url `{s}`"))?
@@ -36,9 +47,9 @@ impl OneBot11 {
 
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
-        });
 
-        Ok(arc)
+            context,
+        })
     }
 
     async fn handle_ws_msg(
@@ -61,20 +72,20 @@ impl OneBot11 {
                     sender,
                 } => {
                     let sender = crate::User::new(user_id.to_string()).nickname(sender.nickname);
-                    crate::Event::Message(
-                        crate::Message::new(
-                            message_id.to_string(),
-                            crate::MessageContents::new().text(raw_message),
-                            match message_type {
-                                MessageType::Private => crate::Chat::Private(sender.clone()),
-                                MessageType::Group => crate::Chat::Group(crate::Group::new(
-                                    group_id.context("no group id")?.to_string(),
-                                )),
+                    crate::Event::Message(crate::Message::new(
+                        message_id.to_string(),
+                        crate::MessageContents::new().text(raw_message),
+                        match message_type {
+                            MessageType::Private => {
+                                crate::Chat::private(self.clone(), sender.clone())
                             },
-                            sender,
-                        )
-                        .bot(self.clone()),
-                    )
+                            MessageType::Group => crate::Chat::group(
+                                self.clone(),
+                                crate::Group::new(group_id.context("no group id")?.to_string()),
+                            ),
+                        },
+                        sender,
+                    ))
                 },
                 Event::Notice | Event::Request | Event::Meta => {
                     crate::Event::Other(format!("{event:?}"))
@@ -131,7 +142,10 @@ impl OneBot11 {
 }
 
 #[async_trait::async_trait]
-impl BotAPI for OneBot11 {
+impl<C> BotAPI<C> for OneBot11<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     async fn run(self: Arc<Self>) {
         loop {
             let (mut ws_stream, _) = match tokio_tungstenite::connect_async(self.event_url.as_str())
@@ -157,7 +171,7 @@ impl BotAPI for OneBot11 {
         }
     }
 
-    async fn next_event(&self) -> Option<crate::Event> {
+    async fn next_event(&self) -> Option<crate::Event<C>> {
         let mut events = self.event_rx.lock().await;
         events.recv().await
     }
@@ -165,7 +179,7 @@ impl BotAPI for OneBot11 {
     async fn send_msg_inner(
         &self,
         contents: crate::MessageContents,
-        chat: crate::Chat,
+        chat: crate::Chat<C>,
     ) -> Result<String> {
         let mut raw = String::new();
         for content in contents {
@@ -177,12 +191,12 @@ impl BotAPI for OneBot11 {
             }
         }
 
-        let req = match chat {
-            crate::Chat::Private(user) => SendMsgReq::Private {
+        let req = match chat.get_info() {
+            crate::ChatInfo::Private(user) => SendMsgReq::Private {
                 user_id: user.id.parse()?,
                 message: raw,
             },
-            crate::Chat::Group(group) => SendMsgReq::Group {
+            crate::ChatInfo::Group(group) => SendMsgReq::Group {
                 group_id: group.id.parse()?,
                 message: raw,
             },
@@ -193,6 +207,10 @@ impl BotAPI for OneBot11 {
             .await?;
 
         Ok(resp.message_id.to_string())
+    }
+
+    fn get_context(&self) -> &C {
+        &self.context
     }
 }
 

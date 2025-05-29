@@ -1,5 +1,5 @@
-use std::fmt::Display;
-use std::sync::{Arc, RwLock};
+use std::fmt::{Debug, Display};
+use std::sync::Arc;
 
 use anyhow::Result;
 use api::BotAPI;
@@ -9,118 +9,148 @@ use tokio::task::JoinSet;
 pub mod api;
 
 #[async_trait::async_trait]
-pub trait BotInstance: 'static {
-    fn api(&self) -> Arc<dyn BotAPI>;
+pub trait BotInstance<C>: Send + Sync + 'static
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
+    async fn handle_msg(self: &Arc<Self>, msg: Message<C>) -> Result<()>;
+    async fn run_jobs(self: &Arc<Self>, apis: &Arc<Vec<Arc<dyn BotAPI<C>>>>) -> Result<()>;
+}
 
-    async fn run(self: Arc<Self>) {
-        let self_clone = self.clone();
-        tokio::spawn(async move {
-            self_clone.api().run().await;
-        });
+pub struct BotMaidBuilder<I, C>
+where
+    I: BotInstance<C>,
+    C: Clone + Debug + Send + Sync + 'static,
+{
+    apis: Vec<Arc<dyn BotAPI<C>>>,
+    instance: I,
+}
 
-        let self_clone = self.clone();
-        tokio::spawn(async move {
-            if let Err(err) = self_clone.run_jobs().await {
+impl<I, C> BotMaidBuilder<I, C>
+where
+    I: BotInstance<C>,
+    C: Clone + Debug + Send + Sync + 'static,
+{
+    pub fn add_api<A>(&mut self, api: A) -> Arc<A>
+    where
+        A: BotAPI<C> + 'static,
+    {
+        let api = Arc::new(api);
+        self.apis.push(api.clone());
+        api
+    }
+
+    pub async fn run(self) {
+        BotMaid {
+            apis: Arc::new(self.apis),
+            instance: Arc::new(self.instance),
+        }
+        .run()
+        .await;
+    }
+}
+
+pub struct BotMaid<I, C>
+where
+    I: BotInstance<C>,
+    C: Clone + Debug + Send + Sync + 'static,
+{
+    apis: Arc<Vec<Arc<dyn BotAPI<C>>>>,
+    instance: Arc<I>,
+}
+
+impl<I, C> BotMaid<I, C>
+where
+    I: BotInstance<C>,
+    C: Clone + Debug + Send + Sync + 'static,
+{
+    #[allow(clippy::new_ret_no_self)]
+    #[must_use]
+    pub fn new(instance: I) -> BotMaidBuilder<I, C> {
+        BotMaidBuilder {
+            apis: Vec::new(),
+            instance,
+        }
+    }
+
+    /// # Errors
+    pub async fn run(self) {
+        let self_arc = Arc::new(self);
+
+        let mut join_set = JoinSet::new();
+        for api in self_arc.apis.iter() {
+            let api_clone = api.clone();
+            join_set.spawn(async move {
+                api_clone.run().await;
+            });
+
+            let api_clone = api.clone();
+            let self_clone = self_arc.clone();
+            join_set.spawn(async move {
+                while let Some(event) = api_clone.next_event().await {
+                    let self_clone = self_clone.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = self_clone.handle_event(event).await {
+                            tracing::error!("{err:?}");
+                        }
+                    });
+                }
+            });
+        }
+
+        let self_clone = self_arc.clone();
+        join_set.spawn(async move {
+            if let Err(err) = self_clone.instance.run_jobs(&self_clone.apis).await {
                 tracing::error!("{err:?}");
             }
         });
 
-        while let Some(event) = self.api().next_event().await {
-            let self_clone = self.clone();
-            tokio::spawn(async move {
-                if let Err(err) = self_clone.handle_event(event).await {
-                    tracing::error!("{err:?}");
-                }
-            });
-        }
+        join_set.join_all().await;
     }
 
-    async fn handle_event(self: Arc<Self>, event: Event) -> Result<()> {
+    async fn handle_event(self: Arc<Self>, event: Event<C>) -> Result<()> {
         tracing::info!("handling event: {event:?}");
 
         match event {
-            Event::Message(msg) => self.handle_msg(msg).await,
+            Event::Message(msg) => self.instance.handle_msg(msg).await,
             Event::Other(_) => Ok(()),
         }
-    }
-
-    async fn handle_msg(self: &Arc<Self>, msg: Message) -> Result<()>;
-    async fn run_jobs(self: &Arc<Self>) -> Result<()>;
-}
-
-pub struct BotMaid<B>
-where
-    B: BotInstance + Send + Sync,
-{
-    bots: RwLock<Vec<Arc<B>>>,
-}
-
-impl<B> BotMaid<B>
-where
-    B: BotInstance + Send + Sync,
-{
-    #[must_use]
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            bots: RwLock::new(Vec::new()),
-        })
-    }
-
-    /// # Panics
-    pub fn add_bot(self: &Arc<Self>, bot: B) -> Arc<B> {
-        let bot = Arc::new(bot);
-        self.bots.write().unwrap().push(bot.clone());
-        bot
-    }
-
-    /// # Panics
-    pub async fn run(self: Arc<Self>) {
-        let mut join_set = JoinSet::new();
-        for bot in &*self.bots.read().unwrap() {
-            let bot_clone = bot.clone();
-            join_set.spawn(bot_clone.run());
-        }
-        join_set.join_all().await;
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum Event {
-    Message(Message),
+pub enum Event<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
+    Message(Message<C>),
     #[allow(dead_code)]
     Other(String),
 }
 
 #[derive(Clone, Derivative)]
 #[derivative(Debug)]
-pub struct Message {
+pub struct Message<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     id: String,
     contents: MessageContents,
-    chat: Chat,
+    chat: Chat<C>,
     sender: User,
-
-    #[derivative(Debug = "ignore")]
-    bot: Option<Arc<dyn BotAPI>>,
 }
 
-impl Message {
+impl<C> Message<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     #[must_use]
-    pub const fn new(id: String, contents: MessageContents, chat: Chat, sender: User) -> Self {
+    pub const fn new(id: String, contents: MessageContents, chat: Chat<C>, sender: User) -> Self {
         Self {
             id,
             contents,
             chat,
             sender,
-
-            bot: None,
-        }
-    }
-
-    #[must_use]
-    pub fn bot(self, bot: Arc<dyn BotAPI>) -> Self {
-        Self {
-            bot: Some(bot),
-            ..self
         }
     }
 
@@ -130,7 +160,7 @@ impl Message {
     }
 
     #[must_use]
-    pub const fn get_chat(&self) -> &Chat {
+    pub const fn get_chat(&self) -> &Chat<C> {
         &self.chat
     }
 
@@ -144,13 +174,19 @@ impl Message {
         &self.contents
     }
 
+    #[must_use]
+    pub fn get_api(&self) -> &Arc<dyn BotAPI<C>> {
+        &self.chat.api
+    }
+
+    #[must_use]
+    pub fn get_api_context(&self) -> &C {
+        self.chat.api.get_context()
+    }
+
     /// # Errors
     pub async fn reply(&self, contents: MessageContents) -> Result<String> {
-        if let Some(bot) = &self.bot {
-            bot.reply(contents, self.chat.clone()).await
-        } else {
-            anyhow::bail!("original message `{self:?}` has no bot pointer");
-        }
+        self.chat.api.reply(contents, self.chat.clone()).await
     }
 }
 
@@ -222,42 +258,106 @@ impl Display for MessageContent {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum Chat {
-    Private(User),
-    Group(Group),
+#[derive(Clone, Derivative)]
+#[derivative(Debug)]
+pub struct Chat<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
+    info: ChatInfo,
+
+    #[derivative(Debug = "ignore")]
+    api: Arc<dyn BotAPI<C>>,
 }
 
-impl Chat {
+impl<C> Chat<C>
+where
+    C: Clone + Debug + Send + Sync + 'static,
+{
     #[must_use]
-    pub const fn from_raw(chat_type: i32, chat_id: String) -> Self {
-        match chat_type {
-            1 => Self::Group(Group::new(chat_id)),
-            _ => Self::Private(User::new(chat_id)),
+    const fn private(api: Arc<dyn BotAPI<C>>, user: User) -> Self {
+        Self {
+            info: ChatInfo::Private(user),
+            api,
         }
+    }
+
+    #[must_use]
+    const fn group(api: Arc<dyn BotAPI<C>>, group: Group) -> Self {
+        Self {
+            info: ChatInfo::Group(group),
+            api,
+        }
+    }
+
+    #[must_use]
+    pub fn spawn_private(&self, user: User) -> Self {
+        Self::private(self.api.clone(), user)
+    }
+
+    #[must_use]
+    pub fn spawn_group(&self, group: Group) -> Self {
+        Self::group(self.api.clone(), group)
+    }
+
+    #[must_use]
+    pub const fn from_raw(api: Arc<dyn BotAPI<C>>, chat_type: i32, chat_id: String) -> Self {
+        Self {
+            info: match chat_type {
+                1 => ChatInfo::Group(Group::new(chat_id)),
+                _ => ChatInfo::Private(User::new(chat_id)),
+            },
+            api,
+        }
+    }
+
+    #[must_use]
+    pub const fn get_info(&self) -> &ChatInfo {
+        &self.info
     }
 
     #[must_use]
     pub const fn get_id(&self) -> &String {
-        match self {
-            Self::Private(user) => user.get_id(),
-            Self::Group(group) => group.get_id(),
+        match &self.info {
+            ChatInfo::Private(user) => user.get_id(),
+            ChatInfo::Group(group) => group.get_id(),
         }
     }
 
     #[must_use]
+    pub const fn get_api(&self) -> &Arc<dyn BotAPI<C>> {
+        &self.api
+    }
+
+    #[must_use]
+    pub fn get_api_context(&self) -> &C {
+        self.api.get_context()
+    }
+
+    #[must_use]
     pub const fn type_as_i32(&self) -> i32 {
-        match self {
-            Self::Private(_) => 0,
-            Self::Group(_) => 1,
+        match &self.info {
+            ChatInfo::Private(_) => 0,
+            ChatInfo::Group(_) => 1,
         }
+    }
+
+    /// # Errors
+    pub async fn send_msg(&self, contents: MessageContents) -> Result<String> {
+        self.api.send_msg(contents, self.clone()).await
     }
 }
 
 #[derive(Clone, Debug)]
+pub enum ChatInfo {
+    Private(User),
+    Group(Group),
+}
+
+#[derive(Clone, Debug)]
 pub struct User {
-    pub id: String,
-    pub nickname: Option<String>,
+    id: String,
+    nickname: Option<String>,
 }
 
 impl User {
@@ -287,7 +387,7 @@ impl User {
 
 #[derive(Clone, Debug)]
 pub struct Group {
-    pub id: String,
+    id: String,
 }
 
 impl Group {
