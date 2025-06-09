@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::{Chat, Event, MessageContents};
+use crate::{Chat, Event, Group, MessageContents, User};
 
 pub mod cli;
 pub mod mock;
@@ -15,6 +15,8 @@ pub trait BotAPI<C>: Send + Sync + 'static
 where
     C: Clone + Debug + Send + Sync + 'static,
 {
+    fn get_context(&self) -> &C;
+
     async fn run(self: Arc<Self>);
 
     async fn next_event(&self) -> Option<Event<C>>;
@@ -29,5 +31,5 @@ where
         self.send_msg(contents, chat).await
     }
 
-    fn get_context(&self) -> &C;
+    async fn is_group_admin(&self, user: &User, group: &Group) -> Result<bool>;
 }

@@ -383,6 +383,17 @@ impl User {
     pub fn get_nickname(&self) -> &str {
         self.nickname.as_ref().map_or("", |nickname| nickname)
     }
+
+    /// # Errors
+    pub async fn is_chat_admin<C>(&self, chat: &Chat<C>) -> Result<bool>
+    where
+        C: Clone + Debug + Send + Sync + 'static,
+    {
+        Ok(match &chat.get_info() {
+            ChatInfo::Private(_) => true,
+            ChatInfo::Group(group) => chat.get_api().is_group_admin(self, group).await?,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]

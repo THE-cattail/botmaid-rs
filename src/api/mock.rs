@@ -91,6 +91,10 @@ impl<C> BotAPI<C> for Mock<C>
 where
     C: Clone + Debug + Send + Sync + 'static,
 {
+    fn get_context(&self) -> &C {
+        &self.context
+    }
+
     async fn run(self: Arc<Self>) {}
 
     async fn next_event(&self) -> Option<crate::Event<C>> {
@@ -116,8 +120,8 @@ where
         Ok(DEFAULT_SENDER_ID.to_owned())
     }
 
-    fn get_context(&self) -> &C {
-        &self.context
+    async fn is_group_admin(&self, user: &crate::User, _: &crate::Group) -> Result<bool> {
+        Ok(user.id == DEFAULT_SENDER_ID)
     }
 }
 

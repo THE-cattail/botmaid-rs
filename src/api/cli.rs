@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
+use sudo::RunningAs;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -67,6 +68,10 @@ impl<C> BotAPI<C> for Cli<C>
 where
     C: Clone + Debug + Send + Sync + 'static,
 {
+    fn get_context(&self) -> &C {
+        &self.context
+    }
+
     async fn run(self: Arc<Self>) {
         let mut reader = BufReader::new(tokio::io::stdin()).lines();
         loop {
@@ -95,8 +100,8 @@ where
         Ok(now_as_id())
     }
 
-    fn get_context(&self) -> &C {
-        &self.context
+    async fn is_group_admin(&self, _: &crate::User, _: &crate::Group) -> Result<bool> {
+        Ok(sudo::check() == RunningAs::Root)
     }
 }
 

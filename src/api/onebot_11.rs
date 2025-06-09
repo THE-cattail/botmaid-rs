@@ -146,6 +146,10 @@ impl<C> BotAPI<C> for OneBot11<C>
 where
     C: Clone + Debug + Send + Sync + 'static,
 {
+    fn get_context(&self) -> &C {
+        &self.context
+    }
+
     async fn run(self: Arc<Self>) {
         loop {
             let (mut ws_stream, _) = match tokio_tungstenite::connect_async(self.event_url.as_str())
@@ -209,8 +213,19 @@ where
         Ok(resp.message_id.to_string())
     }
 
-    fn get_context(&self) -> &C {
-        &self.context
+    async fn is_group_admin(&self, user: &crate::User, group: &crate::Group) -> Result<bool> {
+        let resp: GetGroupMemberInfoData = self
+            .call_api(
+                "get_group_member_info",
+                reqwest::Method::POST,
+                Some(GetGroupMemberInfoReq {
+                    group_id: group.id.parse()?,
+                    user_id: user.id.parse()?,
+                }),
+            )
+            .await?;
+
+        Ok(resp.role == GroupMemberInfoRole::Owner || resp.role == GroupMemberInfoRole::Admin)
     }
 }
 
@@ -277,4 +292,22 @@ enum SendMsgReq {
 #[derive(Debug, Deserialize)]
 struct SendMsgData {
     message_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct GetGroupMemberInfoReq {
+    group_id: i64,
+    user_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetGroupMemberInfoData {
+    role: GroupMemberInfoRole,
+}
+
+#[derive(Debug, PartialEq, Deserialize)]
+enum GroupMemberInfoRole {
+    Owner,
+    Admin,
+    Member,
 }

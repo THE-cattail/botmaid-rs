@@ -134,6 +134,10 @@ impl<C> BotAPI<C> for Telegram<C>
 where
     C: Clone + Debug + Send + Sync + 'static,
 {
+    fn get_context(&self) -> &C {
+        &self.context
+    }
+
     async fn run(self: Arc<Self>) {
         loop {
             let mut offset = 0;
@@ -243,8 +247,20 @@ where
         Ok(resp.message_id.to_string())
     }
 
-    fn get_context(&self) -> &C {
-        &self.context
+    async fn is_group_admin(&self, user: &crate::User, group: &crate::Group) -> Result<bool> {
+        let resp: GetChatMemberData = self
+            .call_api(
+                "getChatMember",
+                reqwest::Method::POST,
+                Some(GetChatMemberReq {
+                    chat_id: group.id.parse()?,
+                    user_id: user.id.parse()?,
+                }),
+            )
+            .await?;
+
+        Ok(resp.status == ChatMemberStatus::Creator ||
+            resp.status == ChatMemberStatus::Administrator)
     }
 }
 
@@ -302,4 +318,25 @@ struct Message {
 struct SendMessageReq {
     chat_id: i64,
     text: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GetChatMemberReq {
+    chat_id: i64,
+    user_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetChatMemberData {
+    status: ChatMemberStatus,
+}
+
+#[derive(Debug, PartialEq, Deserialize)]
+enum ChatMemberStatus {
+    Creator,
+    Administrator,
+    Member,
+    Restricted,
+    Left,
+    Kicked,
 }
