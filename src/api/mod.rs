@@ -16,6 +16,7 @@ where
     C: Clone + Debug + Send + Sync + 'static,
 {
     fn get_context(&self) -> &C;
+    fn get_self_user(&self) -> &User;
 
     async fn run(self: Arc<Self>);
 

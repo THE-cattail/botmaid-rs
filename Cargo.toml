@@ -9,7 +9,7 @@ description = "猫粮：聊天机器人女仆"
 anyhow = "1"
 async-trait = "0"
 derivative = "2"
-food-http-rs = { git = "https://gitea.infra.k-neco.moe/cml/food-http-rs.git" }
+food-http-rs = { git = "ssh://git@github.com/THE-cattail/food-http-rs.git" }
 futures-util = "0"
 reqwest = { version = "0", features = [
     "json",

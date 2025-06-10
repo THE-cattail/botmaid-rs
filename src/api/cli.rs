@@ -8,14 +8,18 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{Receiver, Sender};
 
-use super::BotAPI;
+use crate::BotAPI;
+
+static DEFAULT_BOT_ID: &str = "-";
 
 pub struct Cli<C>
 where
     C: Clone + Debug + Send + Sync + 'static,
 {
-    event_tx: Sender<super::Event<C>>,
-    event_rx: Arc<Mutex<Receiver<super::Event<C>>>>,
+    event_tx: Sender<crate::Event<C>>,
+    event_rx: Arc<Mutex<Receiver<crate::Event<C>>>>,
+
+    self_user: crate::User,
 
     context: C,
 }
@@ -29,9 +33,11 @@ where
     where
         C: Clone + Debug + Send + Sync + 'static,
     {
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<super::Event<C>>(1);
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::Event<C>>(1);
 
         Self {
+            self_user: crate::User::new(DEFAULT_BOT_ID.to_owned()),
+
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
 
@@ -50,10 +56,10 @@ where
         );
         if let Err(err) = self
             .event_tx
-            .send(super::Event::Message(crate::Message::new(
+            .send(crate::Event::Message(crate::Message::new(
                 now_as_id(),
-                super::MessageContents::new().text(line),
-                super::Chat::private(self.clone(), sender.clone()),
+                crate::MessageContents::new().text(line),
+                crate::Chat::private(self.clone(), sender.clone()),
                 sender,
             )))
             .await
@@ -72,6 +78,10 @@ where
         &self.context
     }
 
+    fn get_self_user(&self) -> &crate::User {
+        &self.self_user
+    }
+
     async fn run(self: Arc<Self>) {
         let mut reader = BufReader::new(tokio::io::stdin()).lines();
         loop {
@@ -85,15 +95,15 @@ where
         }
     }
 
-    async fn next_event(&self) -> Option<super::Event<C>> {
+    async fn next_event(&self) -> Option<crate::Event<C>> {
         let mut events = self.event_rx.lock().await;
         events.recv().await
     }
 
     async fn send_msg_inner(
         &self,
-        contents: super::MessageContents,
-        _: super::Chat<C>,
+        contents: crate::MessageContents,
+        _: crate::Chat<C>,
     ) -> Result<String> {
         println!("```\n{contents}\n```");
 
