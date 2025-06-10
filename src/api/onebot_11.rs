@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::{Receiver, Sender};
 use url::Url;
 
-use super::BotAPI;
+use crate::BotAPI;
 
 pub struct OneBot11<C>
 where
@@ -21,6 +21,8 @@ where
     event_tx: Sender<crate::Event<C>>,
     event_rx: Arc<Mutex<Receiver<crate::Event<C>>>>,
 
+    self_user: crate::User,
+
     context: C,
 }
 
@@ -29,24 +31,35 @@ where
     C: Clone + Debug + Send + Sync + 'static,
 {
     /// # Errors
-    pub fn new(host: &str, ws_port: u16, http_port: u16, context: C) -> Result<Self>
+    pub async fn new(host: &str, ws_port: u16, http_port: u16, context: C) -> Result<Self>
     where
         C: Clone + Debug + Send + Sync + 'static,
     {
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::Event<C>>(1);
+
+        let api_url = {
+            let s = format!("http://{host}:{http_port}/");
+            Url::parse(&s).with_context(|| format!("failed to parse api url `{s}`"))?
+        };
+
+        let resp: GetLoginInfoData = call_api(
+            api_url.join("get_login_info")?,
+            reqwest::Method::GET,
+            None::<()>,
+        )
+        .await?;
 
         Ok(Self {
             event_url: {
                 let s = format!("ws://{host}:{ws_port}/event");
                 Url::parse(&s).with_context(|| format!("failed to parse event url `{s}`"))?
             },
-            api_url: {
-                let s = format!("http://{host}:{http_port}/");
-                Url::parse(&s).with_context(|| format!("failed to parse api url `{s}`"))?
-            },
+            api_url,
 
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
+
+            self_user: crate::User::new(resp.user_id.to_string()).nickname(resp.nickname),
 
             context,
         })
@@ -115,29 +128,7 @@ where
             .join(api)
             .with_context(|| format!("failed to join `{}` and {api}", self.api_url))?;
 
-        let url_str = format!("{url}");
-        let method_str = format!("{method}");
-        let req_debug = format!("{req:?}");
-
-        let resp: Resp<D> = food_http_rs::call_api(url, method, req)
-            .await
-            .with_context(|| {
-                format!("failed to call api `{url_str}({method_str})`, req: `{req_debug}`")
-            })?;
-
-        if let Some(data) = resp.data {
-            Ok(data)
-        } else {
-            if matches!(resp.status, RespStatus::Failed) {
-                anyhow::bail!(
-                    "onebot 11 api `{url_str}({method_str})` returns failed, req: `{req_debug}`, retcode: `{}`, error: `{}`",
-                    resp.retcode,
-                    resp.message
-                );
-            }
-
-            anyhow::bail!("onebot 11 api `{url_str}({method_str})` returns empty data");
-        }
+        call_api(url, method, req).await
     }
 }
 
@@ -148,6 +139,10 @@ where
 {
     fn get_context(&self) -> &C {
         &self.context
+    }
+
+    fn get_self_user(&self) -> &crate::User {
+        &self.self_user
     }
 
     async fn run(self: Arc<Self>) {
@@ -226,6 +221,36 @@ where
             .await?;
 
         Ok(resp.role == GroupMemberInfoRole::Owner || resp.role == GroupMemberInfoRole::Admin)
+    }
+}
+
+async fn call_api<R, D>(url: Url, method: reqwest::Method, req: Option<R>) -> Result<D>
+where
+    R: Serialize + Debug + Send,
+    D: for<'de> Deserialize<'de> + Debug,
+{
+    let url_str = format!("{url}");
+    let method_str = format!("{method}");
+    let req_debug = format!("{req:?}");
+
+    let resp: Resp<D> = food_http_rs::call_api(url, method, req)
+        .await
+        .with_context(|| {
+            format!("failed to call api `{url_str}({method_str})`, req: `{req_debug}`")
+        })?;
+
+    if let Some(data) = resp.data {
+        Ok(data)
+    } else {
+        if matches!(resp.status, RespStatus::Failed) {
+            anyhow::bail!(
+                "onebot 11 api `{url_str}({method_str})` returns failed, req: `{req_debug}`, retcode: `{}`, error: `{}`",
+                resp.retcode,
+                resp.message
+            );
+        }
+
+        anyhow::bail!("onebot 11 api `{url_str}({method_str})` returns empty data");
     }
 }
 
@@ -310,4 +335,10 @@ enum GroupMemberInfoRole {
     Owner,
     Admin,
     Member,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetLoginInfoData {
+    user_id: i64,
+    nickname: String,
 }

@@ -6,8 +6,9 @@ use anyhow::Result;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{Receiver, Sender};
 
-use super::BotAPI;
+use crate::BotAPI;
 
+pub static DEFAULT_BOT_ID: &str = "-";
 pub static DEFAULT_SENDER_ID: &str = "0";
 pub static DEFAULT_SENDER_NICKNAME: &str = "tester";
 
@@ -15,12 +16,12 @@ pub struct Mock<C>
 where
     C: Clone + Debug + Send + Sync + 'static,
 {
-    self_user: crate::User,
-
     event_tx: Sender<crate::Event<C>>,
     event_rx: Arc<Mutex<Receiver<crate::Event<C>>>>,
 
     actions: Arc<Mutex<Vec<Action<C>>>>,
+
+    self_user: crate::User,
 
     context: C,
 }
@@ -37,7 +38,7 @@ where
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::Event<C>>(1);
 
         Self {
-            self_user: crate::User::new(DEFAULT_SENDER_ID.to_owned()),
+            self_user: crate::User::new(DEFAULT_BOT_ID.to_owned()),
 
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
@@ -93,6 +94,10 @@ where
 {
     fn get_context(&self) -> &C {
         &self.context
+    }
+
+    fn get_self_user(&self) -> &crate::User {
+        &self.self_user
     }
 
     async fn run(self: Arc<Self>) {}

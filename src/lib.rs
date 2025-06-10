@@ -185,6 +185,19 @@ where
         self.chat.api.get_context()
     }
 
+    #[must_use]
+    pub fn be_at(&self) -> bool {
+        for content in &self.contents {
+            if let MessageContent::At(user) = content {
+                if user.get_id() == &self.get_api().get_self_user().id {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
     /// # Errors
     pub async fn reply(&self, contents: MessageContents) -> Result<String> {
         self.chat.api.reply(contents, self.chat.clone()).await
