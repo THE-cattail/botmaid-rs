@@ -1,4 +1,5 @@
 use std::fmt::{Debug, Display};
+use std::ops::Deref;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -233,6 +234,14 @@ impl Display for MessageContents {
     }
 }
 
+impl Deref for MessageContents {
+    type Target = Vec<MessageContent>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl IntoIterator for MessageContents {
     type Item = MessageContent;
 
@@ -240,6 +249,16 @@ impl IntoIterator for MessageContents {
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a MessageContents {
+    type Item = &'a MessageContent;
+
+    type IntoIter = std::slice::Iter<'a, MessageContent>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
     }
 }
 
