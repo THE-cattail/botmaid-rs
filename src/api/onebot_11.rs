@@ -73,39 +73,48 @@ where
 
         if let tungstenite::Message::Text(text) = msg? {
             let event: Event = serde_json::from_str(&text)
-                .with_context(|| "failed to decode json from `{text}`")?;
+                .with_context(|| format!("failed to decode json from `{text}`"))?;
 
-            let event = match event {
-                Event::Message {
-                    message_id,
-                    message_type,
-                    group_id,
-                    user_id,
-                    raw_message,
-                    sender,
-                } => {
-                    let sender = crate::User::new(user_id.to_string()).nickname(sender.nickname);
-                    crate::Event::Message(crate::Message::new(
-                        message_id.to_string(),
-                        crate::MessageContents::new().text(raw_message),
-                        match message_type {
-                            MessageType::Private => {
-                                crate::Chat::private(self.clone(), sender.clone())
-                            },
-                            MessageType::Group => crate::Chat::group(
-                                self.clone(),
-                                crate::Group::new(group_id.context("no group id")?.to_string()),
-                            ),
-                        },
-                        sender,
-                    ))
-                },
-                Event::Notice | Event::Request | Event::Meta => {
-                    crate::Event::Other(format!("{event:?}"))
-                },
+            let Event::Message {
+                message_id,
+                message_type,
+                group_id,
+                user_id,
+                message,
+                sender,
+            } = event
+            else {
+                return Ok(());
             };
 
-            self.event_tx.send(event).await?;
+            let mut contents = crate::MessageContents::new();
+
+            for msg in message {
+                match msg {
+                    MessageSegment::Text { text } => contents = contents.text(text),
+                    MessageSegment::At { qq } => {
+                        contents = contents.at(crate::User::new(qq));
+                    },
+                    _ => (),
+                }
+            }
+
+            let sender = crate::User::new(user_id.to_string()).nickname(sender.nickname);
+
+            self.event_tx
+                .send(crate::Event::Message(crate::Message::new(
+                    message_id.to_string(),
+                    contents,
+                    match message_type {
+                        MessageType::Private => crate::Chat::private(self.clone(), sender.clone()),
+                        MessageType::Group => crate::Chat::group(
+                            self.clone(),
+                            crate::Group::new(group_id.context("no group id")?.to_string()),
+                        ),
+                    },
+                    sender,
+                )))
+                .await?;
         } else {
             anyhow::bail!("`{msg_debug} is not a text");
         }
@@ -179,13 +188,31 @@ where
         &self,
         contents: crate::MessageContents,
         chat: crate::Chat<C>,
+        reply_to_msg: Option<&crate::Message<C>>,
     ) -> Result<String> {
-        let mut raw = String::new();
+        let mut message = Vec::new();
+
+        if let Some(reply_to_msg) = reply_to_msg {
+            message.push(MessageSegment::Reply {
+                id: reply_to_msg.id.clone(),
+            });
+        }
+
         for content in contents {
             match content {
-                crate::MessageContent::Text(text) => raw = format!("{raw}{text}"),
+                crate::MessageContent::Text(text) => message.push(MessageSegment::Text { text }),
                 crate::MessageContent::At(user) => {
-                    raw = format!("{raw}[CQ:at,qq={}] ", user.id);
+                    if chat.is_private() {
+                        message.push(MessageSegment::Text {
+                            text: user.get_nickname().to_string(),
+                        });
+                    } else {
+                        message.push(MessageSegment::At { qq: user.id });
+                    }
+
+                    message.push(MessageSegment::Text {
+                        text: " ".to_string(),
+                    });
                 },
             }
         }
@@ -193,11 +220,11 @@ where
         let req = match chat.get_info() {
             crate::ChatInfo::Private(user) => SendMsgReq::Private {
                 user_id: user.id.parse()?,
-                message: raw,
+                message,
             },
             crate::ChatInfo::Group(group) => SendMsgReq::Group {
                 group_id: group.id.parse()?,
-                message: raw,
+                message,
             },
         };
 
@@ -270,6 +297,31 @@ enum RespStatus {
     Failed,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+enum MessageSegment {
+    Text { text: String },
+    Face { id: String },
+    Image { file: String },
+    Record { file: String },
+    Video { file: String },
+    At { qq: String },
+    Rps {},
+    Dice {},
+    Shake {},
+    Poke { r#type: String, id: String },
+    Anonymous {},
+    Share { url: String, title: String },
+    Contact { r#type: String, id: String },
+    Location { lat: String, lon: String },
+    Music { r#type: String },
+    Reply { id: String },
+    Forward { id: String },
+    Node {},
+    Xml { data: String },
+    Json { data: String },
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "post_type", rename_all = "snake_case")]
 enum Event {
@@ -278,13 +330,11 @@ enum Event {
         message_type: MessageType,
         group_id: Option<i64>,
         user_id: i64,
-        raw_message: String,
+        message: Vec<MessageSegment>,
         sender: MessageSender,
     },
-    Notice,
-    Request,
-    #[serde(rename = "meta_event")]
-    Meta,
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,8 +360,14 @@ impl TryFrom<&str> for Event {
 #[derive(Debug, Serialize)]
 #[serde(tag = "message_type", rename_all = "snake_case")]
 enum SendMsgReq {
-    Private { user_id: i64, message: String },
-    Group { group_id: i64, message: String },
+    Private {
+        user_id: i64,
+        message: Vec<MessageSegment>,
+    },
+    Group {
+        group_id: i64,
+        message: Vec<MessageSegment>,
+    },
 }
 
 #[derive(Debug, Deserialize)]

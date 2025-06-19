@@ -3,7 +3,7 @@ name: 持续集成 - Rust
 on:
   pull_request:
     paths:
-      - '*'
+      - '**'
 
 jobs:
   main:

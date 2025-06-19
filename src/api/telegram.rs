@@ -62,41 +62,83 @@ where
     }
 
     async fn handle_update(self: &Arc<Self>, update: Update) -> Result<()> {
-        if let Some(message) = update.message {
-            if let Some(text) = message.text {
-                self.event_tx
-                    .send(crate::Event::Message(crate::Message::new(
-                        message.message_id.to_string(),
-                        crate::MessageContents::new().text(text),
-                        if let Some(chat) = message.chat {
-                            if chat.r#type == "private" {
-                                crate::Chat::private(
-                                    self.clone(),
-                                    crate::User::new(chat.id.to_string()),
-                                )
-                            } else {
-                                crate::Chat::group(
-                                    self.clone(),
-                                    crate::Group::new(chat.id.to_string()),
-                                )
-                            }
+        let Some(message) = update.message else {
+            // Ignore updates that are not messages
+            return Ok(());
+        };
+
+        let Some(text) = message.text else {
+            // Ignore messages that do not have text
+            return Ok(());
+        };
+        let utf16_text: Vec<u16> = text.encode_utf16().collect();
+
+        let contents = if let Some(entities) = message.entities {
+            let mut contents = crate::MessageContents::new();
+            let mut last_pos = 0;
+            for entity in entities {
+                if entity.get_offset() > last_pos {
+                    contents = contents.text(String::from_utf16(
+                        &utf16_text[last_pos..entity.get_offset()],
+                    )?);
+                }
+
+                match &entity {
+                    MessageEntity::Mention { .. } => {
+                        let username = String::from_utf16(
+                            &utf16_text[entity.get_offset() + 1..
+                                entity.get_offset() + entity.get_length()],
+                        )?;
+
+                        if username == self.self_user.get_nickname() {
+                            contents = contents.at(self.self_user.clone());
                         } else {
-                            crate::Chat::private(self.clone(), crate::User::new(String::new()))
-                        },
-                        if let Some(from) = message.from {
-                            crate::User::new(from.id.to_string()).nickname(format!(
-                                "{}{}",
-                                from.first_name,
-                                from.last_name
-                                    .map_or_else(String::new, |last_name| format!(" {last_name}"))
-                            ))
-                        } else {
-                            crate::User::new(String::new())
-                        },
-                    )))
-                    .await?;
+                            contents = contents.at(crate::User::new(username));
+                        }
+                    },
+                    MessageEntity::TextMention { user, .. } => {
+                        contents = contents.at(crate::User::new(user.id.to_string()));
+                    },
+                    MessageEntity::Other => {},
+                }
+
+                last_pos = entity.get_offset() + entity.get_length();
             }
-        }
+
+            if last_pos < utf16_text.len() {
+                contents = contents.text(String::from_utf16(&utf16_text[last_pos..])?);
+            }
+
+            contents
+        } else {
+            crate::MessageContents::new().text(text)
+        };
+
+        let msg = crate::Message::new(
+            message.message_id.to_string(),
+            contents,
+            if let Some(chat) = message.chat {
+                if chat.r#type == "private" {
+                    crate::Chat::private(self.clone(), crate::User::new(chat.id.to_string()))
+                } else {
+                    crate::Chat::group(self.clone(), crate::Group::new(chat.id.to_string()))
+                }
+            } else {
+                crate::Chat::private(self.clone(), crate::User::new(String::new()))
+            },
+            if let Some(from) = message.from {
+                crate::User::new(from.id.to_string()).nickname(format!(
+                    "{}{}",
+                    from.first_name,
+                    from.last_name
+                        .map_or_else(String::new, |last_name| format!(" {last_name}"))
+                ))
+            } else {
+                crate::User::new(String::new())
+            },
+        );
+
+        self.event_tx.send(crate::Event::Message(msg)).await?;
 
         Ok(())
     }
@@ -206,32 +248,68 @@ where
         &self,
         contents: crate::MessageContents,
         chat: crate::Chat<C>,
+        reply_to_msg: Option<&crate::Message<C>>,
     ) -> Result<String> {
-        let mut raw = String::new();
+        let mut text = String::new();
+        let mut entities = Vec::new();
+        let mut offset = 0;
+
         for content in contents {
             match content {
-                crate::MessageContent::Text(text) => raw = format!("{raw}{text}"),
+                crate::MessageContent::Text(t) => {
+                    text.push_str(&t);
+                    offset += t.encode_utf16().count();
+                },
                 crate::MessageContent::At(user) => {
-                    raw = format!(
-                        "{raw}{} ",
-                        if let Some(nickname) = user.nickname {
-                            nickname
+                    let mention_text = format!(
+                        "@{}",
+                        if let Some(nickname) = &user.nickname {
+                            nickname.to_owned()
                         } else {
-                            user.id
+                            user.id.clone()
                         }
                     );
+
+                    let mention_text_len = mention_text.encode_utf16().count();
+
+                    entities.push(MessageEntity::TextMention {
+                        user: User {
+                            id: user.id.parse()?,
+                            first_name: user.nickname.unwrap_or_default(),
+                            last_name: None,
+                        },
+                        base: MessageEntityBase {
+                            offset,
+                            length: mention_text_len,
+                        },
+                    });
+                    text.push_str(&mention_text);
+
+                    offset += mention_text_len;
                 },
             }
         }
 
+        let reply_parameters = if let Some(reply_to_msg) = reply_to_msg {
+            Some(ReplyParameters {
+                message_id: reply_to_msg.id.parse()?,
+            })
+        } else {
+            None
+        };
+
         let req = match chat.get_info() {
             crate::ChatInfo::Private(user) => SendMessageReq {
                 chat_id: user.id.parse()?,
-                text: raw,
+                text,
+                entities,
+                reply_parameters,
             },
             crate::ChatInfo::Group(group) => SendMessageReq {
                 chat_id: group.id.parse()?,
-                text: raw,
+                text,
+                entities,
+                reply_parameters,
             },
         };
 
@@ -317,32 +395,80 @@ struct Update {
     message: Option<Message>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct User {
     id: i64,
     first_name: String,
     last_name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Chat {
     id: i64,
     r#type: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
+struct MessageEntityBase {
+    offset: usize,
+    length: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum MessageEntity {
+    Mention {
+        #[serde(flatten)]
+        base: MessageEntityBase,
+    },
+    TextMention {
+        user: User,
+
+        #[serde(flatten)]
+        base: MessageEntityBase,
+    },
+    #[serde(other)]
+    Other,
+}
+
+impl MessageEntity {
+    const fn get_offset(&self) -> usize {
+        match self {
+            Self::TextMention { base, .. } | Self::Mention { base, .. } => base.offset,
+            Self::Other => 0,
+        }
+    }
+
+    const fn get_length(&self) -> usize {
+        match self {
+            Self::TextMention { base, .. } | Self::Mention { base, .. } => base.length,
+            Self::Other => 0,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct Message {
     #[allow(clippy::struct_field_names)]
     message_id: i64,
     from: Option<User>,
     chat: Option<Chat>,
     text: Option<String>,
+    entities: Option<Vec<MessageEntity>>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReplyParameters {
+    message_id: i64,
 }
 
 #[derive(Debug, Serialize)]
 struct SendMessageReq {
     chat_id: i64,
     text: String,
+    entities: Vec<MessageEntity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_parameters: Option<ReplyParameters>,
 }
 
 #[derive(Debug, Serialize)]
@@ -357,13 +483,12 @@ struct GetChatMemberData {
 }
 
 #[derive(Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum ChatMemberStatus {
     Creator,
     Administrator,
-    Member,
-    Restricted,
-    Left,
-    Kicked,
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Deserialize)]

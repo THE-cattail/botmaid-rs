@@ -111,6 +111,7 @@ where
         &self,
         contents: crate::MessageContents,
         chat: crate::Chat<C>,
+        _: Option<&crate::Message<C>>,
     ) -> Result<String> {
         self.actions
             .lock()
