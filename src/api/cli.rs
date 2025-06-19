@@ -48,22 +48,36 @@ where
     async fn handle_line(self: &Arc<Self>, line: Option<String>) {
         let Some(line) = line else { return };
 
+        let be_at_text = format!("@{} ", self.self_user.id);
+
+        let positions: Vec<_> = line.match_indices(&be_at_text).collect();
+
+        let mut contents = crate::MessageContents::new();
+        let mut last_pos = 0;
+        for (pos, _) in positions {
+            if pos > last_pos {
+                contents = contents.text(&line[last_pos..pos]);
+            }
+
+            contents = contents.at(crate::User::new(self.self_user.id.clone()));
+            last_pos = pos + be_at_text.len();
+        }
+
         let sender = crate::User::new(users::get_current_uid().to_string()).nickname(
             users::get_current_username()
                 .unwrap_or_default()
                 .into_string()
                 .unwrap_or_default(),
         );
-        if let Err(err) = self
-            .event_tx
-            .send(crate::Event::Message(crate::Message::new(
-                now_as_id(),
-                crate::MessageContents::new().text(line),
-                crate::Chat::private(self.clone(), sender.clone()),
-                sender,
-            )))
-            .await
-        {
+
+        let msg = crate::Message::new(
+            now_as_id(),
+            contents,
+            crate::Chat::private(self.clone(), sender.clone()),
+            sender,
+        );
+
+        if let Err(err) = self.event_tx.send(crate::Event::Message(msg)).await {
             tracing::error!("{err:?}");
         }
     }
@@ -104,6 +118,7 @@ where
         &self,
         contents: crate::MessageContents,
         _: crate::Chat<C>,
+        _: Option<&crate::Message<C>>,
     ) -> Result<String> {
         println!("```\n{contents}\n```");
 

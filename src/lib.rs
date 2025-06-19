@@ -200,7 +200,7 @@ where
 
     /// # Errors
     pub async fn reply(&self, contents: MessageContents) -> Result<String> {
-        self.chat.api.reply(contents, self.chat.clone()).await
+        self.chat.api.reply_to_msg(contents, self).await
     }
 }
 
@@ -285,7 +285,7 @@ impl Display for MessageContent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Text(text) => write!(f, "{text}"),
-            Self::At(user) => write!(f, "@{} ", user.get_nickname()),
+            Self::At(user) => write!(f, "@{}({}) ", user.get_nickname(), user.get_id()),
         }
     }
 }
@@ -372,6 +372,16 @@ where
             ChatInfo::Private(_) => 0,
             ChatInfo::Group(_) => 1,
         }
+    }
+
+    #[must_use]
+    pub const fn is_private(&self) -> bool {
+        matches!(self.info, ChatInfo::Private(_))
+    }
+
+    #[must_use]
+    pub const fn is_group(&self) -> bool {
+        matches!(self.info, ChatInfo::Group(_))
     }
 
     /// # Errors
